@@ -14,7 +14,7 @@ from numba.core import cgutils
 # Specific to CUDA extension
 from numba.cuda.cudadecl import registry as cuda_registry
 from numba.cuda.cudaimpl import lower_attr as cuda_lower_attr
-from numba.core.typing.templates import AttributeTemplate
+from numba.core.typing.templates import AttributeTemplate, signature
 
 # User CUDA + test code imports
 
@@ -107,15 +107,17 @@ class Interval_attrs(AttributeTemplate):
 
 
 @cuda_lower_attr(IntervalType, 'width')
-def cuda_Interval_width(context, builder, sig, args):
-    return context.get_constant(types.float64, 5.0)
+def cuda_Interval_width(context, builder, sig, arg):
+    lo = builder.extract_value(arg, 0)
+    hi = builder.extract_value(arg, 1)
+    return builder.fsub(hi, lo)
 
 
 # User code
 
 @cuda.jit
 def width(arr):
-    x = Interval(1.0, 3.0)
+    x = Interval(-2.0, 3.0)
     arr[0] = x.hi - x.lo
     arr[1] = x.width
 
