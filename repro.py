@@ -8,9 +8,21 @@ from numba.core.extending import models, register_model
 
 # Lowering
 
-from numba.extending import lower_builtin
+from numba.core.extending import lower_builtin, make_attribute_wrapper
 from numba.core import cgutils
 
+# Specific to CUDA extension
+from numba.cuda.cudadecl import registry as cuda_registry
+from numba.cuda.cudaimpl import lower_attr as cuda_lower_attr
+from numba.core.typing.templates import AttributeTemplate
+
+# User CUDA + test code imports
+
+from numba import cuda
+import numpy as np
+
+
+# Tutorial code
 
 class Interval(object):
     """
@@ -69,13 +81,47 @@ def impl_interval(context, builder, sig, args):
     return interval._getvalue()
 
 
-#### User code
+make_attribute_wrapper(IntervalType, 'lo', 'lo')
+make_attribute_wrapper(IntervalType, 'hi', 'hi')
 
-from numba import cuda
 
+# From the tutorial - doesn't work due to:
+#
+# No definition for lowering <built-in method getter of _dynfunc._Closure
+# object at 0x7ff6d564c4c0>(Interval,) -> float64
+
+# @overload_attribute(IntervalType, "width")
+# def get_width(interval):
+#     def getter(interval):
+#         return interval.hi - interval.lo
+#     return getter
+
+# Alternative:
+
+@cuda_registry.register_attr
+class Interval_attrs(AttributeTemplate):
+    key = IntervalType
+
+    def resolve_width(self, mod):
+        return types.float64
+
+
+@cuda_lower_attr(IntervalType, 'width')
+def cuda_Interval_width(context, builder, sig, args):
+    return context.get_constant(types.float64, 5.0)
+
+
+# User code
 
 @cuda.jit
-def f():
+def width(arr):
     x = Interval(1.0, 3.0)
+    arr[0] = x.hi - x.lo
+    arr[1] = x.width
 
-f[1, 1]()
+
+out = np.zeros(2)
+
+width[1, 1](out)
+
+print(out)
