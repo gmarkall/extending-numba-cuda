@@ -10,15 +10,16 @@ from numba.core.extending import models, register_model
 
 from numba.core.extending import lower_builtin, make_attribute_wrapper
 from numba.core import cgutils
+from numba.extending import unbox, NativeValue
 
 # Specific to CUDA extension
 from numba.cuda.cudadecl import registry as cuda_registry
 from numba.cuda.cudaimpl import lower_attr as cuda_lower_attr
-from numba.core.typing.templates import AttributeTemplate, signature
+from numba.core.typing.templates import AttributeTemplate
 
 # User CUDA + test code imports
 
-from numba import cuda
+from numba import cuda, jit
 import numpy as np
 
 
@@ -113,17 +114,62 @@ def cuda_Interval_width(context, builder, sig, arg):
     return builder.fsub(hi, lo)
 
 
+# Works, in that it does not error, but the CUDA target doesn't do boxing and
+# unboxing in the normal way so it has no effect.
+
+@unbox(IntervalType)
+def unbox_interval(typ, obj, c):
+    """
+    Convert a Interval object to a native interval structure.
+    """
+    lo_obj = c.pyapi.object_getattr_string(obj, "lo")
+    hi_obj = c.pyapi.object_getattr_string(obj, "hi")
+    interval = cgutils.create_struct_proxy(typ)(c.context, c.builder)
+    interval.lo = c.pyapi.float_as_double(lo_obj)
+    interval.hi = c.pyapi.float_as_double(hi_obj)
+    c.pyapi.decref(lo_obj)
+    c.pyapi.decref(hi_obj)
+    is_error = cgutils.is_not_null(c.builder, c.pyapi.err_occurred())
+    return NativeValue(interval._getvalue(), is_error=is_error)
+
+
+# Examples from the tutorial
+
+@jit(nopython=True)
+def inside_interval(interval, x):
+    return interval.lo <= x < interval.hi
+
+
+@jit(nopython=True)
+def interval_width(interval):
+    return interval.width
+
+
+@jit(nopython=True)
+def sum_intervals(i, j):
+    return Interval(i.lo + j.lo, i.hi + j.hi)
+
+
 # User code
 
 @cuda.jit
-def width(arr):
-    x = Interval(-2.0, 3.0)
-    arr[0] = x.hi - x.lo
+def kernel(arr):
+    x = Interval(1.0, 3.0)
+    arr[0] = x.hi + x.lo
     arr[1] = x.width
+    arr[2] = inside_interval(x, 2.5)
+    arr[3] = inside_interval(x, 3.5)
+    arr[4] = interval_width(x)
+
+    y = Interval(7.5, 9.0)
+    z = sum_intervals(x, y)
+    arr[5] = z.lo
+    arr[6] = z.hi
 
 
-out = np.zeros(2)
+out = np.zeros(7)
 
-width[1, 1](out)
+kernel[1, 1](out)
 
+# prints: [ 4.   2.   1.   0.   2.   8.5 12. ]
 print(out)
