@@ -86,95 +86,13 @@ def impl_interval(context, builder, sig, args):
     cgutils.memset(builder, dst, context.get_constant(types.uint8, 8), 0)
     return interval._getvalue()
 
-
-make_attribute_wrapper(IntervalType, 'lo', 'lo')
-make_attribute_wrapper(IntervalType, 'hi', 'hi')
-
-
-# From the tutorial - doesn't work due to:
-#
-# No definition for lowering <built-in method getter of _dynfunc._Closure
-# object at 0x7ff6d564c4c0>(Interval,) -> float64
-
-# @overload_attribute(IntervalType, "width")
-# def get_width(interval):
-#     def getter(interval):
-#         return interval.hi - interval.lo
-#     return getter
-
-# Alternative:
-
-@cuda_registry.register_attr
-class Interval_attrs(AttributeTemplate):
-    key = IntervalType
-
-    def resolve_width(self, mod):
-        return types.float64
-
-
-@cuda_lower_attr(IntervalType, 'width')
-def cuda_Interval_width(context, builder, sig, arg):
-    lo = builder.extract_value(arg, 0)
-    hi = builder.extract_value(arg, 1)
-    return builder.fsub(hi, lo)
-
-
-# Works, in that it does not error, but the CUDA target doesn't do boxing and
-# unboxing in the normal way so it has no effect.
-
-@unbox(IntervalType)
-def unbox_interval(typ, obj, c):
-    """
-    Convert a Interval object to a native interval structure.
-    """
-    lo_obj = c.pyapi.object_getattr_string(obj, "lo")
-    hi_obj = c.pyapi.object_getattr_string(obj, "hi")
-    interval = cgutils.create_struct_proxy(typ)(c.context, c.builder)
-    interval.lo = c.pyapi.float_as_double(lo_obj)
-    interval.hi = c.pyapi.float_as_double(hi_obj)
-    c.pyapi.decref(lo_obj)
-    c.pyapi.decref(hi_obj)
-    is_error = cgutils.is_not_null(c.builder, c.pyapi.err_occurred())
-    return NativeValue(interval._getvalue(), is_error=is_error)
-
-
-# Examples from the tutorial
-
-@jit(nopython=True)
-def inside_interval(interval, x):
-    return interval.lo <= x < interval.hi
-
-
-@jit(nopython=True)
-def interval_width(interval):
-    return interval.width
-
-
-@jit(nopython=True)
-def sum_intervals(i, j):
-    return Interval(i.lo + j.lo, i.hi + j.hi)
-
-
 # User code
 
 @cuda.jit
-def kernel(arr):
+def kernel():
     x = Interval(1.0, 3.0)
-    arr[0] = x.hi + x.lo
-    arr[1] = x.width
-    arr[2] = inside_interval(x, 2.5)
-    arr[3] = inside_interval(x, 3.5)
-    arr[4] = interval_width(x)
-
-    y = Interval(7.5, 9.0)
-    z = sum_intervals(x, y)
-    arr[5] = z.lo
-    arr[6] = z.hi
 
 
-out = np.zeros(7)
 
-kernel[1, 1](out)
+kernel[1, 1]()
 
-# prints: [ 4.   2.   1.   0.   2.   8.5 12. ]
-print(out)
