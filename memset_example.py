@@ -8,37 +8,23 @@ from numba.core.extending import models, register_model
 
 # Lowering
 
-from numba.core.extending import lower_builtin, make_attribute_wrapper
+from numba.core.extending import lower_builtin
 from numba.core import cgutils
-from numba.extending import unbox, NativeValue
 
-# Specific to CUDA extension
-from numba.cuda.cudadecl import registry as cuda_registry
-from numba.cuda.cudaimpl import lower_attr as cuda_lower_attr
-from numba.core.typing.templates import AttributeTemplate
+
+from llvmlite import ir
 
 # User CUDA + test code imports
 
-from numba import cuda, jit
-import numpy as np
+from numba import cuda
 
 
 # Tutorial code
 
 class Interval(object):
-    """
-    A half-open interval on the real number line.
-    """
-    def __init__(self, lo, hi):
-        self.lo = lo
-        self.hi = hi
-
-    def __repr__(self):
-        return 'Interval(%f, %f)' % (self.lo, self.hi)
-
-    @property
-    def width(self):
-        return self.hi - self.lo
+    def __init__(self):
+        self.lo = 0.0
+        self.hi = 0.0
 
 
 class IntervalType(types.Type):
@@ -56,9 +42,8 @@ def typeof_interval(val, c):
 
 @type_callable(Interval)
 def type_interval(context):
-    def typer(lo, hi):
-        if isinstance(lo, types.Float) and isinstance(hi, types.Float):
-            return interval_type
+    def typer():
+        return interval_type
     return typer
 
 
@@ -72,27 +57,20 @@ class IntervalModel(models.StructModel):
         models.StructModel.__init__(self, dmm, fe_type, members)
 
 
-@lower_builtin(Interval, types.Float, types.Float)
+@lower_builtin(Interval)
 def impl_interval(context, builder, sig, args):
-    typ = sig.return_type
-    lo, hi = args
-    interval = cgutils.create_struct_proxy(typ)(context, builder)
-    interval.lo = lo
-    interval.hi = hi
-    dstty = context.get_value_type(types.uint8)
+    dstty = ir.LiteralStructType([ir.DoubleType(), ir.DoubleType()])
     dst_ptr = cgutils.alloca_once(builder, dstty)
-    dst = builder.bitcast(dst_ptr, dstty.as_pointer())
-    dst.align = 4
-    cgutils.memset(builder, dst, context.get_constant(types.uint8, 8), 0)
-    return interval._getvalue()
+    dst_ptr.align = 4
+    cgutils.memset(builder, dst_ptr, context.get_constant(types.uint32, 8), 0)
+    return builder.load(dst_ptr)
+
 
 # User code
 
 @cuda.jit
 def kernel():
-    x = Interval(1.0, 3.0)
-
-
+    Interval()
 
 kernel[1, 1]()
 
