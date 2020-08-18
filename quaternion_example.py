@@ -2,7 +2,9 @@
 
 from numba import types
 from numba.core.extending import typeof_impl, type_callable
-from numba.core import typing
+from numba.core.typing import signature
+
+import operator
 
 # Data model
 
@@ -15,8 +17,9 @@ from numba.core import cgutils
 
 # Specific to CUDA extension
 from numba.cuda.cudadecl import registry as cuda_registry
-from numba.cuda.cudaimpl import lower_attr as cuda_lower_attr
-from numba.core.typing.templates import AttributeTemplate
+from numba.cuda.cudaimpl import (lower as cuda_lower,
+                                 lower_attr as cuda_lower_attr)
+from numba.core.typing.templates import AttributeTemplate, ConcreteTemplate
 
 # For user CUDA + test code
 
@@ -67,6 +70,12 @@ class Quaternion(object):
         c = self.c
         d = self.d
         return math.atan(2 * (a * d + b * c) / (a * a + b * b - c * c - d * d))
+
+    def __add__(self, other):
+        return Quaternion(self.a + other.a,
+                          self.b + other.b,
+                          self.c + other.c,
+                          self.d + other.d)
 
 
 # Typing
@@ -139,6 +148,11 @@ class Quaternion_attrs(AttributeTemplate):
         return types.float64
 
 
+@cuda_registry.register_global(operator.add)
+class Quaternion_ops(ConcreteTemplate):
+    cases = [signature(quaternion_type, quaternion_type, quaternion_type)]
+
+
 @cuda_lower_attr(QuaternionType, 'phi')
 def cuda_quaternion_phi(context, builder, sig, arg):
     # Computes math.atan(2 * (a * b + c * d) / (a * a - b * b - c * c + d * d))
@@ -155,7 +169,7 @@ def cuda_quaternion_phi(context, builder, sig, arg):
     numerator = builder.fadd(builder.fmul(a, b), builder.fmul(c, d))
     denominator = builder.fadd(builder.fsub(builder.fsub(a2, b2), c2), d2)
 
-    atan_sig = typing.signature(types.float64, types.float64)
+    atan_sig = signature(types.float64, types.float64)
     atan_impl = context.get_function(math.atan, atan_sig)
     atan_arg = builder.fmul(context.get_constant(types.float64, 2),
                             builder.fdiv(numerator, denominator))
@@ -169,7 +183,7 @@ def cuda_quaternion_theta(context, builder, sig, arg):
     b = builder.extract_value(arg, 1)
     c = builder.extract_value(arg, 2)
     d = builder.extract_value(arg, 3)
-    asin_sig = typing.signature(types.float64, types.float64)
+    asin_sig = signature(types.float64, types.float64)
     asin_impl = context.get_function(math.asin, asin_sig)
 
     x = builder.fsub(builder.fmul(b, d), builder.fmul(a, c))
@@ -194,27 +208,49 @@ def cuda_quaternion_psi(context, builder, sig, arg):
     numerator = builder.fadd(builder.fmul(a, d), builder.fmul(b, c))
     denominator = builder.fsub(builder.fsub(builder.fadd(a2, b2), c2), d2)
 
-    atan_sig = typing.signature(types.float64, types.float64)
+    atan_sig = signature(types.float64, types.float64)
     atan_impl = context.get_function(math.atan, atan_sig)
     atan_arg = builder.fmul(context.get_constant(types.float64, 2),
                             builder.fdiv(numerator, denominator))
     return atan_impl(builder, [atan_arg])
 
 
+@cuda_lower(operator.add, quaternion_type, quaternion_type)
+def cuda_quaternion_add(context, builder, sig, args):
+    typ = sig.return_type
+    q1 = cgutils.create_struct_proxy(typ)(context, builder, value=args[0])
+    q2 = cgutils.create_struct_proxy(typ)(context, builder, value=args[1])
+    q3 = cgutils.create_struct_proxy(typ)(context, builder)
+    q3.a = builder.fadd(q1.a, q2.a)
+    q3.b = builder.fadd(q1.b, q2.b)
+    q3.c = builder.fadd(q1.c, q2.c)
+    q3.d = builder.fadd(q1.d, q2.d)
+    return q3._getvalue()
+
+
 @cuda.jit
 def kernel(arr):
-    q = Quaternion(1.0, 2.0, 9.75, 5.0)
-    arr[0] = q.phi
-    arr[1] = q.theta
-    arr[2] = q.psi
+    q1 = Quaternion(1.0, 2.0, 9.75, 5.0)
+    q2 = Quaternion(3.0, 4.0, 5.0, 6.0)
+    q3 = q1 + q2
+    arr[0] = q1.phi
+    arr[1] = q1.theta
+    arr[2] = q1.psi
+    arr[3] = q3.a
+    arr[4] = q3.b
+    arr[5] = q3.c
+    arr[6] = q3.d
 
 
-numba_res = np.zeros(3)
+numba_res = np.zeros(7)
 
 kernel[1, 1](numba_res)
 
-q = Quaternion(1, 2, 9.75, 5)
-python_res = np.array([q.phi, q.theta, q.psi])
+q1 = Quaternion(1, 2, 9.75, 5)
+q2 = Quaternion(3, 4, 5, 6)
+q3 = q1 + q2
+python_res = np.array([q1.phi, q1.theta, q1.psi,
+                      q3.a, q3.b, q3.c, q3.d])
 
 print("Computed with Numba-JITted code:")
 print(numba_res)
